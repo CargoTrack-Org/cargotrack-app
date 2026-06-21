@@ -1,0 +1,171 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ShipmentStatus {
+  CREATED
+  PICKED_UP
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  DELAYED
+  CANCELLED
+}
+
+// Document types known to the compliance agent.
+// "OTHER" is the escape hatch for legacy / unknown types.
+enum DocumentType {
+  INVOICE
+  BILL_OF_LADING
+  SHIPPING_MANIFEST
+  CUSTOMS
+  PROOF_OF_DELIVERY
+  SHIPPING_LABEL
+  OTHER
+}
+
+enum ComplianceSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ComplianceStatus {
+  PENDING   // Agent triggered but not yet complete
+  PASSED    // All checks passed
+  FAILED    // One or more CRITICAL/HIGH findings
+  PARTIAL   // Checks ran but some documents were missing
+}
+
+enum FindingType {
+  MISSING_DOCUMENT
+  DATA_MISMATCH
+  COMPLIANCE_RISK
+  VALIDATION_ERROR
+}
+
+// ─── Core Domain ──────────────────────────────────────────────────────────────
+
+model User {
+  id             String         @id @default(uuid())
+  email          String         @unique
+  password       String
+  name           String
+  role           Role           @default(USER)
+  profilePicture String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  shipments      Shipment[]
+  notifications  Notification[]
+}
+
+model Shipment {
+  id                    String             @id @default(uuid())
+  trackingNumber        String             @unique
+  title                 String
+  senderName            String
+  receiverName          String
+  origin                String
+  destination           String
+  shipmentType          String
+  weight                Float
+  // carrierName added for Phase 1: required by the compliance agent to cross-
+  // reference against Bill of Lading carrier field.
+  carrierName           String?
+  description           String?
+  estimatedDeliveryDate DateTime?
+  status                ShipmentStatus     @default(CREATED)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  userId                String
+  user                  User               @relation(fields: [userId], references: [id])
+  trackingEvents        TrackingEvent[]
+  documents             ShipmentDocument[]
+  // Compliance relation — one report per shipment (unique enforced)
+  complianceReport      ComplianceReport?
+}
+
+model TrackingEvent {
+  id          String         @id @default(uuid())
+  status      ShipmentStatus
+  location    String?
+  description String
+  timestamp   DateTime       @default(now())
+  shipmentId  String
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+}
+
+model ShipmentDocument {
+  id           String       @id @default(uuid())
+  fileName     String
+  originalName String
+  fileType     String
+  fileSize     Int
+  // Changed from String to DocumentType enum for type safety + AI routing
+  documentType DocumentType @default(OTHER)
+  uploadedAt   DateTime     @default(now())
+  shipmentId   String
+  shipment     Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  // A finding can reference the specific document that caused it
+  findings     ComplianceFinding[]
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── AI Compliance Models ─────────────────────────────────────────────────────
+// These models store the output of the Document Compliance Agent.
+// The agent (ai-service) writes directly to these tables via the shared
+// PostgreSQL connection. This avoids a synchronous API call from ai-service
+// back to core-service during the agent run.
+
+model ComplianceReport {
+  id          String             @id @default(uuid())
+  shipmentId  String             @unique  // one report per shipment
+  shipment    Shipment           @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status      ComplianceStatus   @default(PENDING)
+  // Human-readable summary written by the Bedrock agent
+  summary     String?
+  // Bedrock-assigned run identifier for traceability
+  agentRunId  String?
+  findings    ComplianceFinding[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model ComplianceFinding {
+  id          String             @id @default(uuid())
+  reportId    String
+  report      ComplianceReport   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  // Optional: which document triggered this finding
+  documentId  String?
+  document    ShipmentDocument?  @relation(fields: [documentId], references: [id])
+  findingType FindingType
+  severity    ComplianceSeverity
+  description String
+  // Field-level detail: e.g. { field: "destination", expected: "NYC", found: "LAX" }
+  detail      Json?
+  resolvedAt  DateTime?
+  createdAt   DateTime           @default(now())
+}

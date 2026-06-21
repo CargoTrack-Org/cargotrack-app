@@ -1,0 +1,204 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum ShipmentStatus {
+  CREATED
+  PICKED_UP
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  DELAYED
+  CANCELLED
+}
+
+enum DocumentType {
+  INVOICE
+  BILL_OF_LADING
+  SHIPPING_MANIFEST
+  CUSTOMS
+  PROOF_OF_DELIVERY
+  SHIPPING_LABEL
+  OTHER
+}
+
+enum ComplianceSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ComplianceStatus {
+  PENDING
+  PASSED
+  FAILED
+  PARTIAL
+}
+
+enum FindingType {
+  MISSING_DOCUMENT
+  DATA_MISMATCH
+  COMPLIANCE_RISK
+  VALIDATION_ERROR
+  DANGEROUS_GOODS_RISK
+  PARTY_SCREENING_FLAG
+  HS_CODE_MISMATCH
+  VALUE_DISCREPANCY
+  ROUTE_RESTRICTION
+}
+
+// ─── Core Domain (read by ai-service agent tools) ─────────────────────────────
+
+model User {
+  id             String         @id @default(uuid())
+  email          String         @unique
+  password       String
+  name           String
+  role           Role           @default(USER)
+  profilePicture String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  shipments      Shipment[]
+  notifications  Notification[]
+}
+
+model Shipment {
+  id                    String             @id @default(uuid())
+  trackingNumber        String             @unique
+  title                 String
+  senderName            String
+  receiverName          String
+  origin                String
+  destination           String
+  shipmentType          String
+  weight                Float
+  carrierName           String?
+  description           String?
+  estimatedDeliveryDate DateTime?
+  status                ShipmentStatus     @default(CREATED)
+  // ── vNext: Extended intelligence fields ───────────────────────────────────
+  commodityType         String?
+  hsCodeHint            String?
+  isDangerousGoods      Boolean            @default(false)
+  dangerousGoodsClass   String?
+  incoterms             String?
+  declaredValue         Float?
+  currencyCode          String?            @default("USD")
+  aiRiskScore           Float?
+  aiRiskLevel           String?
+  // ─────────────────────────────────────────────────────────────────────────
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  userId                String
+  user                  User               @relation(fields: [userId], references: [id])
+  trackingEvents        TrackingEvent[]
+  documents             ShipmentDocument[]
+  complianceReport      ComplianceReport?
+  aiBriefing            ShipmentAIBriefing?
+}
+
+model TrackingEvent {
+  id          String         @id @default(uuid())
+  status      ShipmentStatus
+  location    String?
+  description String
+  timestamp   DateTime       @default(now())
+  shipmentId  String
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+}
+
+model ShipmentDocument {
+  id           String       @id @default(uuid())
+  fileName     String
+  originalName String
+  fileType     String
+  fileSize     Int
+  documentType DocumentType @default(OTHER)
+  uploadedAt   DateTime     @default(now())
+  shipmentId   String
+  shipment     Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  findings     ComplianceFinding[]
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── AI Intelligence Models ───────────────────────────────────────────────────
+
+// ShipmentAIBriefing — Written by ai-service, read by core-service proxy.
+// Generated on shipment create — provides instant route intelligence.
+model ShipmentAIBriefing {
+  id                       String   @id @default(uuid())
+  shipmentId               String   @unique
+  shipment                 Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  corridor                 String
+  riskSummary              String   @db.Text
+  requiredDocuments        Json     @default("[]")
+  customsComplexity        String?
+  sanctionsStatus          String?
+  estimatedClearanceHours  Int?
+  delayProbability         Float?
+  keyRisks                 Json     @default("[]")
+  regulatoryNotes          String?  @db.Text
+  modelId                  String?
+  generatedAt              DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+}
+
+model ComplianceReport {
+  id                     String             @id @default(uuid())
+  shipmentId             String             @unique
+  shipment               Shipment           @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status                 ComplianceStatus   @default(PENDING)
+  summary                String?
+  overallRiskScore       Float?
+  riskLevel              String?
+  executiveSummary       String?            @db.Text
+  recommendedDisposition String?            @db.Text
+  modelId                String?
+  modelConfidence        Float?
+  processingTimeMs       Int?
+  agentRunId             String?
+  findings               ComplianceFinding[]
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+}
+
+model ComplianceFinding {
+  id                String             @id @default(uuid())
+  reportId          String
+  report            ComplianceReport   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  documentId        String?
+  document          ShipmentDocument?  @relation(fields: [documentId], references: [id])
+  findingType       FindingType
+  severity          ComplianceSeverity
+  description       String
+  detail            Json?
+  evidence          String?            @db.Text
+  reasoning         String?            @db.Text
+  confidenceScore   Float?
+  recommendedAction String?            @db.Text
+  resolvedAt        DateTime?
+  createdAt         DateTime           @default(now())
+}

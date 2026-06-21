@@ -1,0 +1,78 @@
+# CargoTrack — Production Docker Compose
+#
+# PRIMARY DEPLOYMENT MODEL: Independent Frontend + Backend tiers.
+# PostgreSQL is an EXTERNAL dependency (separate EC2 or Amazon RDS).
+#
+# Required environment variables:
+#   DATABASE_HOST      - PostgreSQL host (EC2 private IP or RDS endpoint)
+#   DATABASE_PASSWORD  - PostgreSQL password
+#
+# Optional (with sensible defaults):
+#   DATABASE_PORT, DATABASE_NAME, DATABASE_USER
+#   JWT_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD
+#   BACKEND_URL        - Full URL to backend from frontend's perspective
+#                        e.g., http://10.0.1.5:4000 for separate EC2 deployment
+#                        Defaults to http://backend:4000 (same-network deployment)
+#
+# For local development with a bundled PostgreSQL:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# For independent container deployment (separate EC2s):
+#   Frontend: docker run -e BACKEND_URL=http://<backend-ec2-ip>:4000 -p 80:80 cargotrack-frontend
+#   Backend:  docker run -e DATABASE_HOST=<db-ec2-ip> -e DATABASE_PASSWORD=<pass> -p 4000:4000 cargotrack-backend
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: cargotrack-backend
+    container_name: cargotrack-api
+    restart: unless-stopped
+    environment:
+      # External database — set these to point to your DB EC2 or RDS instance
+      DATABASE_HOST: ${DATABASE_HOST:-localhost}
+      DATABASE_PORT: ${DATABASE_PORT:-5432}
+      DATABASE_NAME: ${DATABASE_NAME:-cargotrack}
+      DATABASE_USER: ${DATABASE_USER:-cargotrack}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-cargotrack123}
+      # Auth
+      JWT_SECRET: ${JWT_SECRET:-cargotrack-super-secret-key-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      # Server
+      PORT: 4000
+      UPLOAD_DIR: /uploads
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      NODE_ENV: ${NODE_ENV:-production}
+      # Admin auto-seeding (created on startup if not found)
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@cargotrack.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+    ports:
+      - "${API_PORT:-4000}:4000"
+    volumes:
+      - uploads:/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the React bundle at build time
+        # Use /api for nginx-proxy mode (recommended)
+        # Use http://<backend-ip>:4000/api for direct-access mode
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    image: cargotrack-frontend
+    container_name: cargotrack-web
+    restart: unless-stopped
+    environment:
+      # Injected at container start via envsubst into nginx config.
+      # Change this to your backend EC2 private IP when deploying separately:
+      #   BACKEND_URL=http://10.0.1.5:4000
+      BACKEND_URL: ${BACKEND_URL:-http://backend:4000}
+    ports:
+      - "${APP_PORT:-80}:80"
+    depends_on:
+      - backend
+
+volumes:
+  uploads:

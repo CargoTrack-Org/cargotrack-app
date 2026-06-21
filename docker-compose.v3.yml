@@ -1,0 +1,209 @@
+# CargoTrack v3 — Phase 2 Docker Compose
+#
+# Three independent services with their own codebases:
+#   core-service     — Auth, Shipments, Admin (port 4000)
+#   document-service — Uploads, Downloads, S3 bridge (port 4001)
+#   ai-service       — Compliance Agent, SQS consumer (port 4002)
+#   postgres         — Shared PostgreSQL (port 5432)
+#   frontend         — React SPA + nginx multi-upstream proxy (port 80)
+#
+# Usage:
+#   docker compose -f docker-compose.v3.yml --env-file .env.v3 up --build
+#
+# Verification:
+#   curl http://localhost:4000/api/health   → {"service":"core-service",...}
+#   curl http://localhost:4001/api/health   → {"service":"document-service",...}
+#   curl http://localhost:4002/api/health   → {"service":"ai-service",...}
+#   curl http://localhost/health            → ok (nginx)
+#   curl http://localhost/api/health        → core-service (via nginx)
+#
+
+services:
+  # ── Shared Database ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: cargotrack-v3-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-cargotrack}
+      POSTGRES_USER: ${DATABASE_USER:-cargotrack}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-cargotrack123}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata_v3:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-cargotrack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Core Service ─────────────────────────────────────────────────────────────
+  # Owns: Auth, Shipments, Admin, Notifications, Reports, Tracking
+  # Schema authority: the ONLY service that runs prisma migrate deploy
+  core-service:
+    build:
+      context: ./services/core-service
+      dockerfile: Dockerfile
+    image: cargotrack-core:v3
+    container_name: cargotrack-core
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-cargotrack}
+      DATABASE_USER: ${DATABASE_USER:-cargotrack}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-cargotrack123}
+      PORT: 4000
+      JWT_SECRET: ${JWT_SECRET:-cargotrack-secret-key-change-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      UPLOAD_DIR: /uploads
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      NODE_ENV: ${NODE_ENV:-development}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@cargotrack.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      EVENT_BUS_NAME: ${EVENT_BUS_NAME:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      # Service-to-service wiring for compliance trigger
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:4002}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      SQS_COMPLIANCE_QUEUE_URL: ${SQS_COMPLIANCE_QUEUE_URL:-}
+    ports:
+      - "${CORE_PORT:-4000}:4000"
+    volumes:
+      - uploads:/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Document Service ─────────────────────────────────────────────────────────
+  # Owns: /api/documents/* routes
+  # No migrations — only prisma generate at build time
+  document-service:
+    build:
+      context: ./services/document-service
+      dockerfile: Dockerfile
+    image: cargotrack-docs:v3
+    container_name: cargotrack-docs
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-cargotrack}
+      DATABASE_USER: ${DATABASE_USER:-cargotrack}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-cargotrack123}
+      PORT: 4001
+      JWT_SECRET: ${JWT_SECRET:-cargotrack-secret-key-change-in-production}
+      UPLOAD_DIR: /uploads
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      NODE_ENV: ${NODE_ENV:-development}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      EVENT_BUS_NAME: ${EVENT_BUS_NAME:-}
+    ports:
+      - "${DOCS_PORT:-4001}:4001"
+    volumes:
+      - uploads:/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-service:
+        condition: service_healthy   # wait for migrations to complete
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4001/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ai-service:
+    build:
+      context: ./services/ai-service
+      dockerfile: Dockerfile
+    image: cargotrack-ai:v3
+    container_name: cargotrack-ai
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-cargotrack}
+      DATABASE_USER: ${DATABASE_USER:-cargotrack}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-cargotrack123}
+      PORT: 4002
+      NODE_ENV: ${NODE_ENV:-development}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      # ── LLM Provider (Bedrock / Gemini / Mock) ───────────────────────────────
+      # LLM_PROVIDER=bedrock → real Nova calls (requires AWS creds + model access)
+      # LLM_PROVIDER=mock    → deterministic mock (default when no AWS region set)
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      SQS_COMPLIANCE_QUEUE_URL: ${SQS_COMPLIANCE_QUEUE_URL:-}
+      # Nova Lite is the default (cost-efficient, fast, ACTIVE in us-east-1)
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-amazon.nova-lite-v1:0}
+      S3_BUCKET: ${S3_BUCKET:-}
+      DYNAMO_AUDIT_TABLE: ${DYNAMO_AUDIT_TABLE:-cargotrack-audit}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      # vNext: MOCK_AGENT is no longer needed. Bedrock is always primary.
+      # If AWS_DEFAULT_REGION is not set, the Bedrock client won't initialize
+      # and the runner automatically falls back to mock agent.
+      # To run against real Bedrock: set AWS_DEFAULT_REGION + inject AWS credentials.
+      MOCK_AGENT: ${MOCK_AGENT:-false}
+      # Extractor fallback chain: Textract → PDF → OCR → Mock
+      # Set TEXTRACT_ENABLED=true when AWS_DEFAULT_REGION + S3_BUCKET are configured
+      TEXTRACT_ENABLED: ${TEXTRACT_ENABLED:-false}
+      # Local upload dir — shared volume with document-service
+      UPLOAD_DIR: /uploads
+      # AWS credentials — inject via environment when testing against real Bedrock
+      # (do NOT hard-code keys here; use env vars or mount ~/.aws as volume)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    ports:
+      - "${AI_PORT:-4002}:4002"
+    volumes:
+      - uploads:/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-service:
+        condition: service_healthy   # wait for migrations
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4002/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    image: cargotrack-frontend:v3
+    container_name: cargotrack-web
+    restart: unless-stopped
+    environment:
+      # nginx proxies:
+      #   /api/documents/* → document-service
+      #   /api/*           → core-service
+      CORE_SERVICE_URL: ${CORE_SERVICE_URL:-http://core-service:4000}
+      DOCUMENT_SERVICE_URL: ${DOCUMENT_SERVICE_URL:-http://document-service:4001}
+    ports:
+      - "${APP_PORT:-80}:80"
+    depends_on:
+      core-service:
+        condition: service_healthy
+      document-service:
+        condition: service_healthy
+
+volumes:
+  pgdata_v3:
+  uploads:
