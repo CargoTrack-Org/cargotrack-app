@@ -24,6 +24,10 @@ permissions:
 env:
   AWS_REGION: us-east-1
   HELM_REPO: CargoTrack-Org/cargotrack-helm
+  # HELM_REPO_TOKEN must be a GitHub Personal Access Token (classic or fine-grained)
+  # with repo:write access to CargoTrack-Org/cargotrack-helm.
+  # Set it as a repository secret: Settings → Secrets → Actions → HELM_REPO_TOKEN.
+  # The default GITHUB_TOKEN cannot push to a different repository.
 
 jobs:
   # ════════════════════════════════════════════════════════════════════════════
@@ -120,7 +124,7 @@ jobs:
       - name: Verify rollout status
         run: |
           ENV="${{ github.event.inputs.environment || 'dev' }}"
-          NS="cargotrack"
+          NS="cargotrack-${ENV}"
           echo "=== Checking rollout status in namespace: ${NS} ==="
           kubectl rollout status deployment/core-service     -n "${NS}" --timeout=300s
           kubectl rollout status deployment/ai-service       -n "${NS}" --timeout=300s
@@ -130,12 +134,16 @@ jobs:
 
       - name: Get pod status
         run: |
-          kubectl get pods -n cargotrack -o wide
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          NS="cargotrack-${ENV}"
+          kubectl get pods -n "${NS}" -o wide
 
       - name: Run health endpoint smoke tests
         run: |
-          # Get ALB endpoint from ingress
-          ALB=$(kubectl get ingress -n cargotrack -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          NS="cargotrack-${ENV}"
+          # Get ALB endpoint from ingress in the correct namespace
+          ALB=$(kubectl get ingress -n "${NS}" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
           if [ -n "${ALB}" ]; then
             echo "ALB endpoint: ${ALB}"
             # Test core-service health (via ALB)
@@ -145,7 +153,7 @@ jobs:
               echo "⚠️  Health check returned ${HTTP_CODE} — ALB may still be warming up"
             fi
           else
-            echo "⚠️  No ALB ingress found — skipping external health check"
+            echo "⚠️  No ALB ingress found in namespace ${NS} — skipping external health check"
           fi
           echo "✅ Smoke tests complete"
 
