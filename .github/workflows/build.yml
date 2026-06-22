@@ -17,9 +17,10 @@ on:
 
 # ─── Permissions ──────────────────────────────────────────────────────────────
 permissions:
-  id-token: write        # OIDC → AWS
+  id-token: write        # OIDC → AWS (ECR push role assumption)
   contents: read
   security-events: write # Upload SARIF to GitHub Security tab
+  actions: write         # Trigger deploy.yml via workflow_dispatch (trigger-deploy job)
 
 env:
   AWS_REGION: us-east-1
