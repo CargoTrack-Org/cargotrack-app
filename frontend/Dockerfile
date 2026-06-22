@@ -5,7 +5,9 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# npm install (not npm ci) — no package-lock.json committed yet.
+# Once package-lock.json is committed, change back to: npm ci
+RUN npm install
 
 COPY . .
 
@@ -20,6 +22,12 @@ RUN npm run build
 # nginx:alpine is the minimal web server image (~25 MB compressed).
 # We run nginx as a non-root user by using the official unprivileged port pattern.
 FROM nginx:1.27-alpine AS runtime
+
+# ── Security: patch CVE-2026-31789 ───────────────────────────────────────────
+# nginx:1.27-alpine ships with libcrypto3/libssl3 3.3.3-r0 which has a
+# CRITICAL heap buffer overflow (CVE-2026-31789). Upgrade to patched 3.3.7-r0.
+# Pinned to the two affected packages only to minimise layer size increase.
+RUN apk upgrade --no-cache libcrypto3 libssl3
 
 # ── Security: non-root user ───────────────────────────────────────────────────
 # nginx Alpine includes a built-in "nginx" user (UID 101).
