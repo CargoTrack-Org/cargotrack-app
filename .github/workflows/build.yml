@@ -157,6 +157,7 @@ jobs:
         # NOTE: uses env.DOCKERHUB_USERNAME (job-level env) NOT secrets.* in if:
         #       because GitHub Actions does not allow secrets context in if expressions.
         if: env.DOCKERHUB_USERNAME != ''
+        continue-on-error: true   # Docker Hub auth may timeout under concurrent load; don't fail the build
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -164,6 +165,12 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Use the built-in Docker daemon driver (no Docker Hub pull needed).
+          # The default 'docker-container' driver pulls moby/buildkit from Docker Hub
+          # during setup, which times out when 4 parallel jobs hit Docker Hub simultaneously.
+          # The 'docker' driver uses the runner's pre-installed dockerd — no network call.
+          driver: docker
 
       - name: Resolve image references
         id: img
@@ -192,8 +199,9 @@ jobs:
           load: true
           push: false
           tags: ${{ steps.img.outputs.full_image }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # NOTE: cache-from/cache-to type=gha requires BuildKit docker-container driver.
+          # We use driver:docker (no Docker Hub dependency) so GHA cache is not available.
+          # Builds are slightly slower but reliably independent of Docker Hub connectivity.
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@master
