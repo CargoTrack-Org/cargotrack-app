@@ -103,6 +103,11 @@ jobs:
   build-scan-push:
     name: Build, Scan & Push — ${{ matrix.service }}
     runs-on: ubuntu-latest
+    # Expose Docker Hub username as a job-level env so we can reference it
+    # in a step-level `if:` condition. The `secrets` context is NOT available
+    # in `if:` expressions — only `env`, `github`, `needs`, etc. are valid there.
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       fail-fast: false
       matrix:
@@ -149,7 +154,9 @@ jobs:
         # quota, effectively eliminating the issue.
         # Requires secrets: DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
         # (hub.docker.com → Account Settings → Personal access tokens)
-        if: secrets.DOCKERHUB_USERNAME != ''
+        # NOTE: uses env.DOCKERHUB_USERNAME (job-level env) NOT secrets.* in if:
+        #       because GitHub Actions does not allow secrets context in if expressions.
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

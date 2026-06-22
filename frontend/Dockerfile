@@ -33,7 +33,8 @@ RUN apk upgrade --no-cache libcrypto3 libssl3
 # nginx writes its master process PID to /run/nginx.pid by default.
 # /run is root-owned; this container runs as nginx (UID 101) — no write access.
 # Redirect the PID file to /tmp which is writable by all users.
-RUN sed -i 's|pid  /run/nginx.pid;|pid  /tmp/nginx.pid;|' /etc/nginx/nginx.conf
+# Using path-only sed (not 'pid  ...') to be whitespace-agnostic.
+RUN sed -i 's|/run/nginx.pid|/tmp/nginx.pid|g' /etc/nginx/nginx.conf
 
 # Copy built static assets from builder
 COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
