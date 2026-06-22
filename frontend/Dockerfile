@@ -42,6 +42,16 @@ COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
 # Copy nginx config template (envsubst substitutes service URLs at startup)
 COPY --chown=nginx:nginx nginx.conf /etc/nginx/templates/nginx.conf.template
 
+# Fix ownership so nginx (UID 101) can write to runtime directories:
+#   /var/cache/nginx  — nginx proxy cache, temp files
+#   /var/log/nginx    — access.log, error.log
+#   /etc/nginx/conf.d — envsubst writes default.conf here at startup
+#                       (CMD: envsubst ... > /etc/nginx/conf.d/default.conf)
+# This was previously removed accidentally — without it the startup CMD
+# fails with: sh: can't create /etc/nginx/conf.d/default.conf: Permission denied
+RUN chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d && \
+    chmod -R 755 /var/cache/nginx /var/log/nginx /etc/nginx/conf.d
+
 # Drop privileges
 USER nginx
 
