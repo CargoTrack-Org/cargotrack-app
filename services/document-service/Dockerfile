@@ -6,7 +6,9 @@ RUN apk add --no-cache openssl
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --only=production=false
+# npm install (not npm ci) — no package-lock.json committed yet.
+# Once package-lock.json is committed, change back to: npm ci
+RUN npm install
 
 # document-service reads DB via Prisma but does NOT run migrations
 COPY prisma ./prisma

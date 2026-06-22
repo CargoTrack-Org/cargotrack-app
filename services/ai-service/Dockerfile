@@ -6,7 +6,10 @@ RUN apk add --no-cache openssl
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --only=production=false
+# npm install (not npm ci) — no package-lock.json committed yet.
+# npm ci requires a lock file; npm install generates one.
+# Once package-lock.json is committed, this can be changed back to: npm ci
+RUN npm install
 
 # Prisma client generation (ai-service reads DB but does NOT run migrations)
 COPY prisma ./prisma

@@ -10,7 +10,9 @@ WORKDIR /app
 
 # Install dependencies first (layer-cached when package.json unchanged)
 COPY package*.json ./
-RUN npm ci --only=production=false
+# npm install (not npm ci) — no package-lock.json committed yet.
+# Once package-lock.json is committed, change back to: npm ci
+RUN npm install
 
 # Generate Prisma client for the target architecture
 COPY prisma ./prisma
