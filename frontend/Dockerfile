@@ -29,17 +29,11 @@ FROM nginx:1.27-alpine AS runtime
 # Pinned to the two affected packages only to minimise layer size increase.
 RUN apk upgrade --no-cache libcrypto3 libssl3
 
-# ── Security: non-root user ───────────────────────────────────────────────────
-# nginx Alpine includes a built-in "nginx" user (UID 101).
-# Reconfigure nginx to run as that user and listen on port 8080 instead of 80
-# (ports <1024 require root; 8080 does not).
-# The Kubernetes Service maps port 80 → 8080 on the pod.
-RUN sed -i 's/listen       80;/listen       8080;/g'       /etc/nginx/conf.d/default.conf && \
-    sed -i 's/listen  \[::\]:80;/listen  [::]:8080;/g'     /etc/nginx/conf.d/default.conf || true
-
-# Fix ownership of nginx runtime dirs so non-root user can write pid/logs
-RUN chown -R nginx:nginx /var/cache/nginx /var/log/nginx /etc/nginx/conf.d && \
-    chmod -R 755 /var/cache/nginx /var/log/nginx
+# ── Security: non-root nginx PID file ────────────────────────────────────────
+# nginx writes its master process PID to /run/nginx.pid by default.
+# /run is root-owned; this container runs as nginx (UID 101) — no write access.
+# Redirect the PID file to /tmp which is writable by all users.
+RUN sed -i 's|pid  /run/nginx.pid;|pid  /tmp/nginx.pid;|' /etc/nginx/nginx.conf
 
 # Copy built static assets from builder
 COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
