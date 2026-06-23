@@ -793,8 +793,18 @@ export async function runComplianceAgent(
     console.warn('[Runner] AWS region not configured — falling back to mock agent');
     await runMockAgent(trigger, tools);
   } else {
-    // Always use Bedrock Nova Lite — this is the production path
-    await runBedrockAgent(trigger, tools);
+    // Always try Bedrock Nova Lite first — this is the production path
+    try {
+      await runBedrockAgent(trigger, tools);
+    } catch (err) {
+      // Bedrock failed (throttling, model error, quota, network issue).
+      // Fall back to mock agent to guarantee:
+      //   1. ComplianceReport is finalized in Postgres (not stuck in PENDING)
+      //   2. DynamoDB audit event is written
+      //   3. SQS message is deleted (no infinite retry loop)
+      console.error('[Runner] Bedrock agent failed — falling back to mock agent for guaranteed audit trail:', err);
+      await runMockAgent(trigger, tools);
+    }
   }
 
   // ── Auto-trigger: Copilot Executive Summary Enrichment ──────────────────

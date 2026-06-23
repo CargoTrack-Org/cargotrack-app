@@ -269,7 +269,17 @@ export class BriefingEngine {
         briefing = await generateBedrockBriefing(shipment);
       } catch (err) {
         console.error('[Briefing] Bedrock call failed, using catalog-grounded mock fallback:', err);
-        const ctx = KnowledgeBase.buildGroundedContext(shipment);
+        // FIX: buildGroundedContext can fail too (same catalog crash). Wrap it so we
+        // always produce a briefing and never leave `briefing` undefined.
+        let fallbackSources: string[] = [];
+        let fallbackConfidence: string = 'LOW';
+        try {
+          const ctx = KnowledgeBase.buildGroundedContext(shipment);
+          fallbackSources = ctx.knowledgeSources;
+          fallbackConfidence = ctx.knowledgeConfidence;
+        } catch (kbErr) {
+          console.warn('[Briefing] Knowledge base context also failed in mock fallback — using bare defaults:', kbErr);
+        }
         briefing = generateMockBriefing(
           shipment.origin,
           shipment.destination,
@@ -278,8 +288,8 @@ export class BriefingEngine {
           shipment.isDangerousGoods,
           shipment.incoterms,
           shipment.hsCodeHint,
-          ctx.knowledgeSources,
-          ctx.knowledgeConfidence,
+          fallbackSources,
+          fallbackConfidence,
         );
       }
     }

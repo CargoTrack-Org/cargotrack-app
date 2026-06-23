@@ -525,7 +525,14 @@ export const KnowledgeBase = {
       destinationRisk:    toRisk(destinationJ),
       originJurisdiction: originJ,
       destinationJurisdiction: destinationJ,
-      mandatoryScreeningLists: catalog.mandatoryScreeningLists.map((l) => l.listName),
+      // FIX: mandatoryScreeningLists is nested inside _catalog in the JSON file
+      // (catalog._catalog.mandatoryScreeningLists) but the SanctionsCatalog interface
+      // declares it at the top level. Null-safety handles both locations defensively.
+      mandatoryScreeningLists: (
+        catalog.mandatoryScreeningLists ??
+        ((catalog._catalog as unknown as { mandatoryScreeningLists?: ScreeningList[] }).mandatoryScreeningLists) ??
+        []
+      ).map((l) => l.listName),
       combinedRedFlags,
       circumventionHubWarning: circumventionWarning,
     };
