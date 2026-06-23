@@ -69,20 +69,23 @@ jobs:
         run: |
           ENV="${{ github.event.inputs.environment || 'dev' }}"
           echo "env=${ENV}" >> $GITHUB_OUTPUT
-          echo "values_file=cargotrack/values-${ENV}.yaml" >> $GITHUB_OUTPUT
 
-      - name: Update image tags in values file
+      - name: Update image tags in per-service values files
+        # Each service chart has its own values-{env}.yaml.
+        # yq updates the image registry and tag in all 4 files.
         run: |
           SHA="${{ github.event.inputs.image_sha || github.sha }}"
           REGISTRY="${{ steps.ecr.outputs.registry }}"
-          VALUES="cargotrack-helm/${{ steps.env.outputs.values_file }}"
+          ENV="${{ steps.env.outputs.env }}"
+          BASE="cargotrack-helm"
 
-          yq -i ".image.registry = \"${REGISTRY}\""   "$VALUES"
-          yq -i ".coreService.tag = \"${SHA}\""        "$VALUES"
-          yq -i ".documentService.tag = \"${SHA}\""    "$VALUES"
-          yq -i ".aiService.tag = \"${SHA}\""          "$VALUES"
-          yq -i ".frontend.tag = \"${SHA}\""           "$VALUES"
-          echo "✅ Updated ${{ steps.env.outputs.values_file }} with SHA=${SHA:0:8}"
+          for CHART in frontend core-service document-service ai-service; do
+            VALUES="${BASE}/${CHART}/values-${ENV}.yaml"
+            yq -i ".image.registry = \"${REGISTRY}\"" "${VALUES}"
+            yq -i ".image.tag = \"${SHA}\""           "${VALUES}"
+            echo "  ✅ ${CHART}/values-${ENV}.yaml → SHA=${SHA:0:8}"
+          done
+          echo "✅ All 4 chart values updated for environment: ${ENV}"
 
       - name: Commit and push to cargotrack-helm
         run: |
