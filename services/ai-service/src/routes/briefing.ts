@@ -37,9 +37,14 @@ router.post('/generate/:shipmentId', requireInternalSecret, async (req: Request,
   // Respond immediately — briefing runs async (fire-and-forget for fast shipment create response)
   res.status(202).json({ message: 'Briefing generation started', shipmentId });
 
-  // Generate in background — non-blocking
-  engine.generateBriefing(shipmentId).catch((err) => {
-    console.error(`[briefing-route] Generation failed for ${shipmentId}:`, err);
+  // Generate in background — non-blocking. One automatic retry after 3 s covers
+  // transient DB errors in saveBriefing and any startup race on the ai-service pod.
+  engine.generateBriefing(shipmentId).catch(async (err) => {
+    console.error(`[briefing-route] Generation failed for ${shipmentId}, retrying in 3s:`, err);
+    await new Promise((r) => setTimeout(r, 3000));
+    engine.generateBriefing(shipmentId).catch((retryErr) => {
+      console.error(`[briefing-route] Retry also failed for ${shipmentId}:`, retryErr);
+    });
   });
 });
 
@@ -49,7 +54,11 @@ router.get('/:shipmentId', requireInternalSecret, async (req: Request, res: Resp
   try {
     const briefing = await engine.getBriefing(req.params.shipmentId);
     if (!briefing) {
-      res.status(404).json({ error: 'No briefing found for this shipment' });
+      // Return 200 with a pending status rather than 404.
+      // 404 means "will never exist"; a missing row on a new shipment means
+      // generation is still running in the background. The frontend polls on
+      // this signal until real data arrives.
+      res.status(200).json({ status: 'generating' });
       return;
     }
     res.json(briefing);

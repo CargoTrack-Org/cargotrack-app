@@ -419,15 +419,24 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
     retry: false,
   });
 
-  // Route Intelligence Briefing — generated on shipment create
-  const { data: briefing } = useQuery<any>({
+  // Route Intelligence Briefing — generated async after shipment create.
+  // The server returns { status: 'generating' } (HTTP 200) while the briefing
+  // is still being produced. We poll every 8 s until real data arrives or until
+  // 10 polls have elapsed (~80 s), after which we stop and surface whatever state
+  // the server is in (avoids polling forever on a permanent failure).
+  const { data: briefing, isLoading: briefingLoading } = useQuery<any>({
     queryKey: ['admin-briefing', shipment.id],
     queryFn: async () => {
       const { data } = await api.get(`/admin/briefing/${shipment.id}`);
       return data;
     },
-    retry: false,
     staleTime: 10 * 60 * 1000,
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      if (d && d.status !== 'generating') return false;   // real briefing arrived
+      if (query.state.dataUpdateCount > 10) return false; // ~80 s of polling, give up
+      return 8000;
+    },
   });
 
   // Copilot queries — auto-load on drawer open
@@ -504,12 +513,19 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
         <div className="flex-1 p-5 space-y-7">
 
           {/* ══ 0. Route Intelligence Briefing ═══════════════════════════ */}
-          {briefing && (
+          {/* Show while loading, while the server signals 'generating', or once data arrives */}
+          {(briefingLoading || briefing) && (
             <section>
               <div className="flex items-center gap-2 mb-3">
                 <Route className="w-4 h-4 text-indigo-400" />
                 <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Route Intelligence</h3>
               </div>
+              {(briefingLoading || briefing?.status === 'generating') ? (
+                <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-slate-800/40 border border-indigo-500/20 text-xs text-slate-500">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400 flex-shrink-0" />
+                  <span>Route intelligence is being generated…</span>
+                </div>
+              ) : (
               <div style={{
                 background: 'linear-gradient(135deg, rgba(15,23,42,0.95), rgba(30,41,59,0.95))',
                 border: '1px solid rgba(99,102,241,0.3)',
@@ -559,6 +575,7 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
                   </div>
                 )}
               </div>
+              )}
             </section>
           )}
 
