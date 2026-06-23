@@ -95,6 +95,10 @@ jobs:
           git add .
           git diff --staged --quiet || \
             git commit -m "deploy(${{ steps.env.outputs.env }}): images tagged ${GITHUB_SHA::8} [skip ci]"
+          # Pull --rebase before push: handles the case where another deploy (e.g., dev)
+          # pushed to cargotrack-helm after this job checked out. Since dev and prod
+          # update different files, the rebase always succeeds without conflicts.
+          git pull --rebase origin main
           git push
           echo "✅ Helm values updated — ArgoCD will auto-sync within 3 minutes"
 

@@ -243,14 +243,29 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 4: Trigger deploy pipeline after successful build
   # ════════════════════════════════════════════════════════════════════════════
+  # FIX: Previously this job dispatched deploy.yml for BOTH dev AND prod
+  # simultaneously. Both runs would checkout cargotrack-helm at the same Git
+  # revision, make changes, commit, and push — causing a race condition:
+  #
+  #   dev  → commits B on top of A → pushes B ✅
+  #   prod → commits C on top of A → pushes C ❌ (remote is now at B)
+  #
+  # Error: "Updates were rejected because the remote contains work you do not
+  # have locally."
+  #
+  # FIX: Only auto-deploy to dev. Prod is promoted MANUALLY via:
+  #   GitHub Actions → deploy.yml → Run workflow → environment: prod
+  # This is proper GitOps: auto to dev, manual promotion to prod.
   trigger-deploy:
-    name: Trigger Deploy Pipeline
+    name: Trigger Deploy (dev)
     runs-on: ubuntu-latest
     needs: [build-scan-push]
     if: github.event_name != 'pull_request' && success()
 
     steps:
-      - name: Dispatch deploy workflow — dev
+      - name: Dispatch deploy workflow — dev only
+        # IMPORTANT: Only dev is auto-deployed on build.
+        # To promote to prod: GitHub Actions → deploy.yml → Run workflow → environment: prod
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -266,20 +281,4 @@ jobs:
               }
             });
             console.log('✅ Deploy workflow triggered for dev — SHA: ${{ github.sha }}');
-
-      - name: Dispatch deploy workflow — prod
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'deploy.yml',
-              ref: context.ref,
-              inputs: {
-                image_sha: '${{ github.sha }}',
-                environment: 'prod'
-              }
-            });
-            console.log('✅ Deploy workflow triggered for prod — SHA: ${{ github.sha }}');
+            console.log('ℹ️  Prod deploy is MANUAL: Actions → deploy.yml → Run workflow → environment: prod');
