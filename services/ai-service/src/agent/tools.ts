@@ -367,16 +367,20 @@ export class AgentTools implements AgentDataAccess {
     }
 
     try {
+      // FIX: DynamoDB table schema has hash_key="shipmentId" and range_key="timestamp".
+      // The previous code wrote "pk"/"sk" which caused:
+      // ValidationException: Missing the key shipmentId in the item
       await dynamo.send(
         new PutItemCommand({
           TableName: config.dynamoAuditTable,
           Item: {
-            pk: { S: `SHIPMENT#${input.shipmentId}` },
-            sk: { S: `COMPLIANCE#${input.timestamp}` },
-            eventType: { S: input.eventType },
-            summary: { S: input.summary },
+            shipmentId: { S: input.shipmentId },           // partition key (was wrongly named "pk")
+            timestamp:  { S: input.timestamp },            // sort key — ISO string (unique per event)
+            eventType:  { S: input.eventType },
+            summary:    { S: input.summary },
             agentRunId: { S: input.agentRunId },
-            timestamp: { S: input.timestamp },
+            // TTL: auto-expire audit records after 90 days (DynamoDB TTL attribute)
+            ttl: { N: String(Math.floor(Date.now() / 1000) + 90 * 24 * 3600) },
           },
         })
       );

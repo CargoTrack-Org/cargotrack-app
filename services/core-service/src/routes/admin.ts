@@ -29,19 +29,32 @@ async function proxyToAIInternal(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (config.internalApiSecret) headers['x-internal-secret'] = config.internalApiSecret;
 
+  // 110s timeout: matches copilot proxy — brief Bedrock generation can take 30-90s.
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 110_000);
+
   try {
     const aiRes = await fetch(url, {
       method,
       headers,
+      signal: controller.signal,
       ...(body !== undefined && method === 'POST' ? { body: JSON.stringify(body) } : {}),
     });
+    clearTimeout(deadline);
     const data = await aiRes.json();
     res.status(aiRes.status).json(data);
   } catch (err: any) {
+    clearTimeout(deadline);
+    if (err.name === 'AbortError') {
+      console.error(`[admin-proxy] ${label} timed out after 110s`);
+      res.status(504).json({ error: 'AI service request timed out', detail: 'Please try again.' });
+      return;
+    }
     console.error(`[admin-proxy] ${label} error:`, err.message);
     res.status(503).json({ error: 'AI service unavailable', detail: err.message });
   }
 }
+
 
 // ─── GET /api/admin/briefing/:shipmentId ─────────────────────────────────────
 

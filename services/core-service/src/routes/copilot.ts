@@ -35,21 +35,36 @@ async function proxyToAI(
     headers['x-internal-secret'] = config.internalApiSecret;
   }
 
+  // 110s timeout: Bedrock Nova Lite can take 30–90s on complex prompts.
+  // 110s < nginx proxy_read_timeout (120s) — so we return a clean 504 before
+  // nginx forcibly terminates the connection, making the error visible to the UI.
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 110_000);
+
   try {
     const fetchOptions: RequestInit = {
       method,
       headers,
+      signal: controller.signal,
       ...(body !== undefined && method === 'POST'
         ? { body: JSON.stringify(body) }
         : {}),
     };
 
-    // Use global fetch (Node 18+) or fall back to http module pattern
     const aiRes = await fetch(url, fetchOptions);
+    clearTimeout(deadline);
     const data = await aiRes.json();
-
     res.status(aiRes.status).json(data);
   } catch (err: any) {
+    clearTimeout(deadline);
+    if (err.name === 'AbortError') {
+      console.error(`[copilot-proxy] ${label} timed out after 110s`);
+      res.status(504).json({
+        error: 'AI service request timed out',
+        detail: 'The AI model took too long to respond. Please try again in a moment.',
+      });
+      return;
+    }
     console.error(`[copilot-proxy] ${label} error:`, err.message);
     res.status(503).json({
       error: 'AI service unavailable',
