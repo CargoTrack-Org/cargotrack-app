@@ -45,18 +45,30 @@ export class BedrockProvider implements LLMProvider {
       },
     }));
 
-    const response = await this.client.send(
-      new ConverseCommand({
-        modelId: this.modelId,
-        system: [{ text: req.system }],
-        messages,
-        ...(tools ? { toolConfig: { tools } } : {}),
-        inferenceConfig: {
-          maxTokens: req.maxTokens ?? 4096,
-          temperature: req.temperature ?? 0.2,
-        },
-      })
-    );
+    // 90s hard timeout on the Bedrock SDK call — must fire before the
+    // 110s AbortController in core-service/src/routes/copilot.ts so the
+    // ai-service returns a proper error instead of the proxy sending 504.
+    const abortController = new AbortController();
+    const bedrockTimeout = setTimeout(() => abortController.abort(), 90_000);
+
+    let response: Awaited<ReturnType<typeof this.client.send>>;
+    try {
+      response = await this.client.send(
+        new ConverseCommand({
+          modelId: this.modelId,
+          system: [{ text: req.system }],
+          messages,
+          ...(tools ? { toolConfig: { tools } } : {}),
+          inferenceConfig: {
+            maxTokens: req.maxTokens ?? 4096,
+            temperature: req.temperature ?? 0.2,
+          },
+        }),
+        { abortSignal: abortController.signal }
+      );
+    } finally {
+      clearTimeout(bedrockTimeout);
+    }
 
     const stopReason = response.stopReason;
     const content = response.output?.message?.content ?? [];
