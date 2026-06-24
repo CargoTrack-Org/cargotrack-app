@@ -454,8 +454,11 @@ export class TextractService {
     let attempts = 0;
 
     while (attempts < MAX_POLL_ATTEMPTS) {
+      const delay = attempts < POLL_SCHEDULE_MS.length
+        ? POLL_SCHEDULE_MS[attempts]
+        : POLL_FINAL_INTERVAL_MS;
+      await sleep(delay);
       attempts++;
-      await sleep(POLL_INTERVAL_MS);
 
       const getCommand = new GetDocumentAnalysisCommand({ JobId: jobId });
       const result = await this.textract!.send(getCommand);
