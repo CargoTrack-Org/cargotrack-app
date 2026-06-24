@@ -14,7 +14,7 @@ on:
         required: true
         default: 'dev'
         type: choice
-        options: [dev]
+        options: [dev, prod]
       services:
         description: 'JSON array of services to update, e.g. ["ai-service","frontend"]. Leave blank to update all.'
         required: false
@@ -62,11 +62,24 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "registry=${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
 
+      - name: Resolve helm branch
+        id: helm-branch
+        run: |
+          # dev values live on develop branch; prod values live on main branch.
+          # This ensures dev and prod Helm values are never mixed.
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          if [ "$ENV" = "prod" ]; then
+            echo "branch=main" >> $GITHUB_OUTPUT
+          else
+            echo "branch=develop" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout cargotrack-helm repo
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_REPO }}
           token: ${{ secrets.HELM_REPO_TOKEN }}
+          ref: ${{ steps.helm-branch.outputs.branch }}
           path: cargotrack-helm
 
       - name: Install yq
@@ -105,18 +118,18 @@ jobs:
 
       - name: Commit and push to cargotrack-helm
         run: |
+          HELM_BRANCH="${{ steps.helm-branch.outputs.branch }}"
           cd cargotrack-helm
           git config user.name "GitHub Actions — CargoTrack Deploy"
           git config user.email "actions@cargotrack.io"
           git add .
           git diff --staged --quiet || \
             git commit -m "deploy(${{ steps.env.outputs.env }}): images tagged ${GITHUB_SHA::8} [skip ci]"
-          # Pull --rebase before push: handles the case where another deploy (e.g., dev)
-          # pushed to cargotrack-helm after this job checked out. Since dev and prod
-          # update different files, the rebase always succeeds without conflicts.
-          git pull --rebase origin main
-          git push
-          echo "✅ Helm values updated — ArgoCD will auto-sync within 3 minutes"
+          # Pull --rebase: handles concurrent pushes to the same branch.
+          # dev→develop and prod→main never conflict since they write different branches.
+          git pull --rebase origin "${HELM_BRANCH}"
+          git push origin "${HELM_BRANCH}"
+          echo "✅ Helm values updated on ${HELM_BRANCH} — ArgoCD will auto-sync within 3 minutes"
 
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 2: Smoke tests — verify pods are healthy after ArgoCD syncs
