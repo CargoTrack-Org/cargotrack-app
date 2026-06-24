@@ -53,6 +53,8 @@ export class BedrockProvider implements LLMProvider {
     const bedrockTimeout = setTimeout(() => abortController.abort(), 90_000);
 
     let response: ConverseCommandOutput;
+    const t0 = Date.now();
+    console.log(`[bedrock] → ConverseCommand model=${this.modelId} maxTokens=${req.maxTokens ?? 4096}`);
     try {
       response = await this.client.send(
         new ConverseCommand({
@@ -67,6 +69,10 @@ export class BedrockProvider implements LLMProvider {
         }),
         { abortSignal: abortController.signal }
       );
+      console.log(`[bedrock] ← OK stopReason=${response.stopReason} in ${Date.now() - t0}ms`);
+    } catch (err: any) {
+      console.error(`[bedrock] ✗ ${err.name}: ${err.message?.slice(0, 120)} (${Date.now() - t0}ms)`);
+      throw err;
     } finally {
       clearTimeout(bedrockTimeout);
     }
