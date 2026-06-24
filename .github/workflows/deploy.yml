@@ -15,6 +15,10 @@ on:
         default: 'dev'
         type: choice
         options: [dev]
+      services:
+        description: 'JSON array of services to update, e.g. ["ai-service","frontend"]. Leave blank to update all.'
+        required: false
+        default: '["core-service","ai-service","document-service","frontend"]'
 
 # ─── Permissions ──────────────────────────────────────────────────────────────
 permissions:
@@ -78,21 +82,26 @@ jobs:
           echo "env=${ENV}" >> $GITHUB_OUTPUT
 
       - name: Update image tags in per-service values files
-        # Each service chart has its own values-{env}.yaml.
-        # yq updates the image registry and tag in all 4 files.
+        # Only updates the services listed in the `services` input JSON array.
+        # Unchanged services keep their existing tag — ArgoCD won't restart them.
+        # Defaults to all 4 services when triggered manually without a services list.
+        env:
+          SERVICES: ${{ github.event.inputs.services || '["core-service","ai-service","document-service","frontend"]' }}
         run: |
           SHA="${{ github.event.inputs.image_sha || github.sha }}"
           REGISTRY="${{ steps.ecr.outputs.registry }}"
           ENV="${{ steps.env.outputs.env }}"
           BASE="cargotrack-helm"
 
-          for CHART in frontend core-service document-service ai-service; do
+          echo "Updating services: $SERVICES"
+
+          echo "$SERVICES" | jq -r '.[]' | while read CHART; do
             VALUES="${BASE}/${CHART}/values-${ENV}.yaml"
             yq -i ".image.registry = \"${REGISTRY}\"" "${VALUES}"
             yq -i ".image.tag = \"${SHA}\""           "${VALUES}"
             echo "  ✅ ${CHART}/values-${ENV}.yaml → SHA=${SHA:0:8}"
           done
-          echo "✅ All 4 chart values updated for environment: ${ENV}"
+          echo "✅ $(echo "$SERVICES" | jq 'length') service(s) updated for environment: ${ENV}"
 
       - name: Commit and push to cargotrack-helm
         run: |

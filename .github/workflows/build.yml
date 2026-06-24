@@ -23,7 +23,6 @@ permissions:
   actions: write         # Trigger deploy.yml via workflow_dispatch (trigger-deploy job)
 
 # Cancel in-progress builds on the same branch when a new push arrives.
-# Prevents a stale build from queuing a deploy after a newer build already has.
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -32,6 +31,73 @@ env:
   AWS_REGION: us-east-1
 
 jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 0: Detect which services changed — drives the build matrix
+  #
+  # Only services whose source tree changed get rebuilt.
+  # dorny/paths-filter on workflow_dispatch treats all files as changed,
+  # so manual triggers always rebuild all 4 services.
+  # If only workflow/CI files change (no service code), we also rebuild all
+  # to validate the new workflow config.
+  # ════════════════════════════════════════════════════════════════════════════
+  detect-changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      services_json: ${{ steps.set-matrix.outputs.services_json }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect service path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core-service:
+              - 'services/core-service/**'
+            ai-service:
+              - 'services/ai-service/**'
+            document-service:
+              - 'services/document-service/**'
+            frontend:
+              - 'frontend/**'
+
+      - name: Build service matrix from changed paths
+        id: set-matrix
+        run: |
+          INCLUDE=()
+          SERVICES=()
+
+          add() {
+            INCLUDE+=("{\"service\":\"$1\",\"context\":\"$2\",\"ecr_repo\":\"$3\"}")
+            SERVICES+=("\"$1\"")
+          }
+
+          [ "${{ steps.filter.outputs.core-service }}" = "true" ]     && add core-service     ./services/core-service     cargotrack-core
+          [ "${{ steps.filter.outputs.ai-service }}" = "true" ]       && add ai-service       ./services/ai-service       cargotrack-ai
+          [ "${{ steps.filter.outputs.document-service }}" = "true" ] && add document-service ./services/document-service cargotrack-docs
+          [ "${{ steps.filter.outputs.frontend }}" = "true" ]         && add frontend         ./frontend                  cargotrack-frontend
+
+          # If no service code changed (e.g. only .github/workflows/ changed),
+          # build all to verify the new workflow config works end-to-end.
+          if [ ${#INCLUDE[@]} -eq 0 ]; then
+            add core-service     ./services/core-service     cargotrack-core
+            add ai-service       ./services/ai-service       cargotrack-ai
+            add document-service ./services/document-service cargotrack-docs
+            add frontend         ./frontend                  cargotrack-frontend
+          fi
+
+          MATRIX_JSON=$(printf '%s,' "${INCLUDE[@]}" | sed 's/,$//')
+          SERVICES_JSON=$(printf '%s,' "${SERVICES[@]}" | sed 's/,$//')
+
+          echo "matrix={\"include\":[${MATRIX_JSON}]}"   >> $GITHUB_OUTPUT
+          echo "services_json=[${SERVICES_JSON}]"        >> $GITHUB_OUTPUT
+
+          echo "Services to build: [${SERVICES_JSON}]"
+
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 1: SonarQube SAST
   # ════════════════════════════════════════════════════════════════════════════
@@ -103,36 +169,17 @@ jobs:
           args: --file=services/document-service/package.json --severity-threshold=high
 
   # ════════════════════════════════════════════════════════════════════════════
-  # JOB 3: Build, Trivy scan, push to ECR
-  # Uses OIDC — no long-lived AWS credentials stored in GitHub.
+  # JOB 3: Build, Trivy scan, push to ECR — only changed services
   # ════════════════════════════════════════════════════════════════════════════
   build-scan-push:
     name: Build, Scan & Push — ${{ matrix.service }}
     runs-on: ubuntu-latest
-    # Expose Docker Hub username as a job-level env so we can reference it
-    # in a step-level `if:` condition. The `secrets` context is NOT available
-    # in `if:` expressions — only `env`, `github`, `needs`, etc. are valid there.
+    needs: [detect-changes]
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - service: core-service
-            context: ./services/core-service
-            ecr_repo: cargotrack-core
-
-          - service: ai-service
-            context: ./services/ai-service
-            ecr_repo: cargotrack-ai
-
-          - service: document-service
-            context: ./services/document-service
-            ecr_repo: cargotrack-docs
-
-          - service: frontend
-            context: ./frontend
-            ecr_repo: cargotrack-frontend
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
 
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
@@ -154,16 +201,8 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Login to Docker Hub (avoids rate limits on moby/buildkit pull)
-        # docker/setup-buildx-action pulls moby/buildkit from Docker Hub to boot
-        # the builder. Anonymous pulls share a rate limit (100/6h per runner IP)
-        # causing intermittent failures. Authenticated pulls have a much higher
-        # quota, effectively eliminating the issue.
-        # Requires secrets: DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
-        # (hub.docker.com → Account Settings → Personal access tokens)
-        # NOTE: uses env.DOCKERHUB_USERNAME (job-level env) NOT secrets.* in if:
-        #       because GitHub Actions does not allow secrets context in if expressions.
         if: env.DOCKERHUB_USERNAME != ''
-        continue-on-error: true   # Docker Hub auth may timeout under concurrent load; don't fail the build
+        continue-on-error: true
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -174,8 +213,7 @@ jobs:
         with:
           # Use the built-in Docker daemon driver (no Docker Hub pull needed).
           # The default 'docker-container' driver pulls moby/buildkit from Docker Hub
-          # during setup, which times out when 4 parallel jobs hit Docker Hub simultaneously.
-          # The 'docker' driver uses the runner's pre-installed dockerd — no network call.
+          # during setup, which times out when parallel jobs hit Docker Hub simultaneously.
           driver: docker
 
       - name: Resolve image references
@@ -205,9 +243,6 @@ jobs:
           load: true
           push: false
           tags: ${{ steps.img.outputs.full_image }}
-          # NOTE: cache-from/cache-to type=gha requires BuildKit docker-container driver.
-          # We use driver:docker (no Docker Hub dependency) so GHA cache is not available.
-          # Builds are slightly slower but reliably independent of Docker Hub connectivity.
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@master
@@ -227,7 +262,6 @@ jobs:
           sarif_file: trivy-${{ matrix.service }}.sarif
           category: trivy-${{ matrix.service }}
 
-      # Hard gate: fail the build if CRITICAL vulns exist in pushed images
       - name: Trivy hard gate — fail on CRITICAL vulnerabilities
         if: steps.img.outputs.should_push == 'true'
         uses: aquasecurity/trivy-action@master
@@ -247,35 +281,21 @@ jobs:
           echo "✅ Pushed ${{ matrix.service }} → ${{ steps.img.outputs.full_image }}"
 
   # ════════════════════════════════════════════════════════════════════════════
-  # JOB 4: Trigger deploy pipeline after successful build
+  # JOB 4: Trigger deploy pipeline — only for changed services
   # ════════════════════════════════════════════════════════════════════════════
-  # FIX: Previously this job dispatched deploy.yml for BOTH dev AND prod
-  # simultaneously. Both runs would checkout cargotrack-helm at the same Git
-  # revision, make changes, commit, and push — causing a race condition:
-  #
-  #   dev  → commits B on top of A → pushes B ✅
-  #   prod → commits C on top of A → pushes C ❌ (remote is now at B)
-  #
-  # Error: "Updates were rejected because the remote contains work you do not
-  # have locally."
-  #
-  # FIX: Only auto-deploy to dev. Prod is promoted MANUALLY via:
-  #   GitHub Actions → deploy.yml → Run workflow → environment: prod
-  # This is proper GitOps: auto to dev, manual promotion to prod.
   trigger-deploy:
     name: Trigger Deploy (dev)
     runs-on: ubuntu-latest
-    needs: [build-scan-push]
+    needs: [detect-changes, build-scan-push]
     if: github.event_name != 'pull_request' && success()
 
     steps:
-      - name: Dispatch deploy workflow — dev only
-        # IMPORTANT: Only dev is auto-deployed on build.
-        # To promote to prod: GitHub Actions → deploy.yml → Run workflow → environment: prod
+      - name: Dispatch deploy workflow — dev only, changed services only
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const services = '${{ needs.detect-changes.outputs.services_json }}';
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -283,8 +303,11 @@ jobs:
               ref: context.ref,
               inputs: {
                 image_sha: '${{ github.sha }}',
-                environment: 'dev'
+                environment: 'dev',
+                services: services
               }
             });
-            console.log('✅ Deploy workflow triggered for dev — SHA: ${{ github.sha }}');
-            console.log('ℹ️  Prod deploy is MANUAL: Actions → deploy.yml → Run workflow → environment: prod');
+            console.log('✅ Deploy triggered for dev — SHA: ${{ github.sha }}');
+            console.log('ℹ️  Services: ' + services);
+            console.log('ℹ️  Unchanged services keep their existing image tags in Helm.');
+            console.log('ℹ️  Prod deploy is MANUAL: Actions → promote-prod.yml → Run workflow');

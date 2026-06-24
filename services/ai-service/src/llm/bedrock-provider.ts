@@ -11,6 +11,7 @@
 import {
   BedrockRuntimeClient,
   ConverseCommand,
+  type ConverseCommandOutput,
   type Message as BedrockMessage,
   type ContentBlock,
   type Tool as BedrockTool,
@@ -51,7 +52,7 @@ export class BedrockProvider implements LLMProvider {
     const abortController = new AbortController();
     const bedrockTimeout = setTimeout(() => abortController.abort(), 90_000);
 
-    let response: Awaited<ReturnType<typeof this.client.send>>;
+    let response: ConverseCommandOutput;
     try {
       response = await this.client.send(
         new ConverseCommand({
