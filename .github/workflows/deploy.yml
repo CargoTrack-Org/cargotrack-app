@@ -148,13 +148,35 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ECR_PUSH_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Wait for ArgoCD to sync (2-minute grace period)
-        # ArgoCD polls every 3 minutes by default; 2 minutes gives it time to
-        # detect the helm values change and trigger the rolling restart.
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl for EKS
         run: |
-          echo "Waiting 120 seconds for ArgoCD to detect new image tag and reconcile pods..."
-          sleep 120
-          echo "Grace period complete — proceeding to health checks"
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name cargotrack
+
+      - name: Wait for ArgoCD to sync
+        # ArgoCD polls every 3 minutes by default; wait 90s then verify via kubectl
+        run: |
+          echo "Waiting 90 seconds for ArgoCD to detect new image tag..."
+          sleep 90
+
+      - name: Verify rollout status
+        run: |
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          NS="cargotrack-${ENV}"
+          echo "Checking rollout status in namespace: ${NS}"
+
+          for SVC in frontend core-service document-service ai-service; do
+            echo "→ kubectl rollout status deployment/${SVC} -n ${NS}"
+            kubectl rollout status deployment/${SVC} -n ${NS} --timeout=5m \
+              && echo "  ✅ ${SVC} rollout complete" \
+              || echo "  ⚠️  ${SVC} rollout timed out — pods may still be starting"
+          done
 
       - name: Discover ALB endpoint from AWS
         id: alb

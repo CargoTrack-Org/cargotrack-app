@@ -135,7 +135,39 @@ jobs:
           echo "Deploy target: ${DEPLOY_ENV}"
 
   # ════════════════════════════════════════════════════════════════════════════
-  # JOB 1: SonarQube SAST
+  # JOB 1: Lint — TypeScript type check across all services
+  # Fast fail before heavier scan/build jobs.
+  # ════════════════════════════════════════════════════════════════════════════
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lint — core-service
+        run: |
+          npm install --prefix services/core-service
+          cd services/core-service && npx tsc --noEmit
+
+      - name: Lint — ai-service
+        run: |
+          npm install --prefix services/ai-service
+          cd services/ai-service && npx tsc --noEmit
+
+      - name: Lint — document-service
+        run: |
+          npm install --prefix services/document-service
+          cd services/document-service && npx tsc --noEmit
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 2: SonarQube SAST
   # ════════════════════════════════════════════════════════════════════════════
   sonarqube:
     name: SonarQube SAST
@@ -210,7 +242,7 @@ jobs:
   build-scan-push:
     name: Build, Scan & Push — ${{ matrix.service }}
     runs-on: ubuntu-latest
-    needs: [detect-changes]
+    needs: [detect-changes, lint]
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     strategy:
