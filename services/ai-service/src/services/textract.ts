@@ -41,9 +41,16 @@ const SYNC_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/webp'];
 const ASYNC_MIME_TYPES = ['application/pdf'];
 const ALL_SUPPORTED = [...SYNC_MIME_TYPES, ...ASYNC_MIME_TYPES];
 
-// Max poll attempts for async Textract (30s × 20 = 10 min ceiling)
-const MAX_POLL_ATTEMPTS = 20;
-const POLL_INTERVAL_MS = 30_000;
+// Async Textract polling: check frequently at first, then back off.
+// Small PDFs complete in 5-15s; large docs may take 30-60s.
+const POLL_SCHEDULE_MS = [3_000, 5_000, 5_000, 5_000, 5_000, 10_000, 10_000, 10_000, 15_000, 15_000];
+const POLL_FINAL_INTERVAL_MS = 15_000;
+const MAX_POLL_ATTEMPTS = 30; // ~3 min ceiling
+
+// In-process cache: doc.id → { text, expires }
+// Avoids re-running Textract on repeated copilot calls for the same document.
+const textCache = new Map<string, { result: ExtractedDocumentText; expires: number }>();
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // ─── Block Parsing ────────────────────────────────────────────────────────────
 // Textract returns a flat list of Block objects with parent/child relationships.
@@ -221,6 +228,13 @@ export class TextractService {
       return this.mockExtractText(doc);
     }
 
+    // Return cached result if still fresh — avoids re-running Textract on repeated copilot calls
+    const cached = textCache.get(doc.id);
+    if (cached && cached.expires > Date.now()) {
+      console.log(`[textract] Cache hit — doc: ${doc.id}`);
+      return cached.result;
+    }
+
     const mimeType = doc.fileType.toLowerCase();
 
     if (!ALL_SUPPORTED.some((m) => mimeType.includes(m.split('/')[1]))) {
@@ -291,7 +305,7 @@ export class TextractService {
 
     console.log(`[textract][SYNC] Extracted ${rawText.length} chars, confidence: ${confidence.toFixed(2)}`);
 
-    return {
+    const result: ExtractedDocumentText = {
       documentId: doc.id,
       documentType: doc.documentType,
       rawText,
@@ -299,6 +313,8 @@ export class TextractService {
       confidence,
       pageCount: 1,
     };
+    textCache.set(doc.id, { result, expires: Date.now() + CACHE_TTL_MS });
+    return result;
   }
 
   // ── Synchronous extraction (images) — key-value fields output (deprecated) ─
@@ -351,6 +367,7 @@ export class TextractService {
     const jobId = startResponse.JobId;
     if (!jobId) throw new Error('Textract async job started but returned no JobId');
 
+    const t0 = Date.now();
     console.log(`[textract][ASYNC] JobId: ${jobId} — polling...`);
 
     const allBlocks: Block[] = [];
@@ -358,8 +375,11 @@ export class TextractService {
     let pageCount = 1;
 
     while (attempts < MAX_POLL_ATTEMPTS) {
+      const delay = attempts < POLL_SCHEDULE_MS.length
+        ? POLL_SCHEDULE_MS[attempts]
+        : POLL_FINAL_INTERVAL_MS;
+      await sleep(delay);
       attempts++;
-      await sleep(POLL_INTERVAL_MS);
 
       const getCommand = new GetDocumentAnalysisCommand({ JobId: jobId });
       const result = await this.textract!.send(getCommand);
@@ -378,16 +398,15 @@ export class TextractService {
           allBlocks.push(...(pageResult.Blocks ?? []));
           nextToken = pageResult.NextToken;
         }
-        // Count unique page numbers
         const pageNums = new Set(allBlocks.map((b) => b.Page ?? 1));
         pageCount = pageNums.size;
 
         const rawText = blocksToRawText(allBlocks);
         const confidence = averageConfidence(allBlocks);
 
-        console.log(`[textract][ASYNC] Complete — ${rawText.length} chars, ${pageCount} page(s), confidence: ${confidence.toFixed(2)}`);
+        console.log(`[textract][ASYNC] Complete — ${rawText.length} chars, ${pageCount} page(s), confidence: ${confidence.toFixed(2)}, elapsed: ${Date.now() - t0}ms`);
 
-        return {
+        const result2: ExtractedDocumentText = {
           documentId: doc.id,
           documentType: doc.documentType,
           rawText,
@@ -395,9 +414,11 @@ export class TextractService {
           confidence,
           pageCount,
         };
+        textCache.set(doc.id, { result: result2, expires: Date.now() + CACHE_TTL_MS });
+        return result2;
       }
 
-      console.log(`[textract][ASYNC] Job ${jobId} status: ${result.JobStatus} (attempt ${attempts}/${MAX_POLL_ATTEMPTS})`);
+      console.log(`[textract][ASYNC] Job ${jobId} status: ${result.JobStatus} (attempt ${attempts}/${MAX_POLL_ATTEMPTS}, elapsed: ${Date.now() - t0}ms)`);
     }
 
     throw new Error(`Textract async job ${jobId} timed out after ${MAX_POLL_ATTEMPTS} poll attempts`);
