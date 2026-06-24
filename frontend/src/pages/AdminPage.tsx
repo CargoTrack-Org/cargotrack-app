@@ -449,14 +449,14 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
   });
 
   // Copilot queries — auto-load on drawer open
-  const { data: copilotSummary, isLoading: summaryLoading, isError: summaryError, refetch: retrySummary } = useQuery<CopilotSummary>({
+  const { data: copilotSummary, isLoading: summaryLoading, isFetching: summaryFetching, isError: summaryError, refetch: retrySummary } = useQuery<CopilotSummary>({
     queryKey: ['copilot-summary', shipment.id],
     queryFn: async () => { const { data } = await api.post(`/admin/copilot/${shipment.id}/summary`); return data; },
     retry: false,
     staleTime: 5 * 60 * 1000,
   });
 
-  const { data: copilotTimeline, isLoading: timelineLoading } = useQuery<CopilotTimeline>({
+  const { data: copilotTimeline, isLoading: timelineLoading, isFetching: timelineFetching } = useQuery<CopilotTimeline>({
     queryKey: ['copilot-timeline', shipment.id],
     queryFn: async () => { const { data } = await api.get(`/admin/copilot/${shipment.id}/timeline`); return data; },
     retry: false,
@@ -596,7 +596,7 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
               <Sparkles className="w-4 h-4 text-purple-400" />
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">AI Shipment Brief</h3>
             </div>
-            {summaryLoading ? <SectionLoader /> : copilotSummary ? <ExecutiveSummaryCard data={copilotSummary} /> : <div className="flex items-center gap-2"><p className="text-xs text-slate-600">Unable to generate summary.</p>{summaryError && <button onClick={() => retrySummary()} className="text-xs text-purple-400 hover:text-purple-300 underline">Retry</button>}</div>}
+            {(summaryLoading || summaryFetching) ? <SectionLoader /> : copilotSummary ? <ExecutiveSummaryCard data={copilotSummary} /> : <div className="flex items-center gap-2"><p className="text-xs text-slate-600">Unable to generate summary.</p>{summaryError && <button onClick={() => retrySummary()} className="text-xs text-purple-400 hover:text-purple-300 underline">Retry</button>}</div>}
           </section>
 
           {/* ══ 2. Risk Intelligence Engine ══════════════════════════════ */}
@@ -658,7 +658,7 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
           {/* ══ 6. Timeline Narrative ════════════════════════════════════ */}
           <section>
             <div className="flex items-center gap-2 mb-3"><History className="w-3.5 h-3.5 text-indigo-400" /><h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Journey Narrative</h3></div>
-            {timelineLoading ? <SectionLoader /> : copilotTimeline ? <TimelineCard data={copilotTimeline} /> : <p className="text-xs text-slate-600">Timeline narrative unavailable.</p>}
+            {(timelineLoading || timelineFetching) ? <SectionLoader /> : copilotTimeline ? <TimelineCard data={copilotTimeline} /> : <p className="text-xs text-slate-600">Timeline narrative unavailable.</p>}
           </section>
 
           {/* ══ 7. Similar Shipment Analysis ════════════════════════════ */}
