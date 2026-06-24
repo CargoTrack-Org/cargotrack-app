@@ -407,6 +407,7 @@ function AskCopilotPanel({ shipmentId, riskLevel }: { shipmentId: string; riskLe
 function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [triggering, setTriggering] = useState(false);
+  const [reanalyzePending, setReanalyzePending] = useState(false);
 
   const { data: docs, isLoading: docsLoading } = useQuery<Document[]>({
     queryKey: ['admin-docs', shipment.id],
@@ -417,7 +418,15 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
     queryKey: ['admin-compliance', shipment.id],
     queryFn: async () => { const { data } = await api.get(`/admin/compliance/${shipment.id}`); return data; },
     retry: false,
+    refetchInterval: (query) => {
+      if (reanalyzePending || query.state.data?.status === 'PENDING') return 8000;
+      return false;
+    },
   });
+
+  useEffect(() => {
+    if (compliance && compliance.status !== 'PENDING') setReanalyzePending(false);
+  }, [compliance?.status]);
 
   // Route Intelligence Briefing — generated async after shipment create.
   // The server returns { status: 'generating' } (HTTP 200) while the briefing
@@ -440,7 +449,7 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
   });
 
   // Copilot queries — auto-load on drawer open
-  const { data: copilotSummary, isLoading: summaryLoading } = useQuery<CopilotSummary>({
+  const { data: copilotSummary, isLoading: summaryLoading, isError: summaryError, refetch: retrySummary } = useQuery<CopilotSummary>({
     queryKey: ['copilot-summary', shipment.id],
     queryFn: async () => { const { data } = await api.post(`/admin/copilot/${shipment.id}/summary`); return data; },
     retry: false,
@@ -481,7 +490,9 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
     try {
       await api.post(`/admin/compliance/trigger/${shipment.id}`);
       toast.success('Risk intelligence analysis started');
-      setTimeout(() => { queryClient.invalidateQueries({ queryKey: ['admin-compliance', shipment.id] }); queryClient.invalidateQueries({ queryKey: ['copilot-summary', shipment.id] }); }, 5000);
+      setReanalyzePending(true);
+      queryClient.invalidateQueries({ queryKey: ['admin-compliance', shipment.id] });
+      queryClient.invalidateQueries({ queryKey: ['copilot-summary', shipment.id] });
     } catch { toast.error('Failed to trigger analysis'); } finally { setTriggering(false); }
   };
 
@@ -585,7 +596,7 @@ function DocumentDrawer({ shipment, onClose }: { shipment: Shipment; onClose: ()
               <Sparkles className="w-4 h-4 text-purple-400" />
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">AI Shipment Brief</h3>
             </div>
-            {summaryLoading ? <SectionLoader /> : copilotSummary ? <ExecutiveSummaryCard data={copilotSummary} /> : <p className="text-xs text-slate-600">Unable to generate summary.</p>}
+            {summaryLoading ? <SectionLoader /> : copilotSummary ? <ExecutiveSummaryCard data={copilotSummary} /> : <div className="flex items-center gap-2"><p className="text-xs text-slate-600">Unable to generate summary.</p>{summaryError && <button onClick={() => retrySummary()} className="text-xs text-purple-400 hover:text-purple-300 underline">Retry</button>}</div>}
           </section>
 
           {/* ══ 2. Risk Intelligence Engine ══════════════════════════════ */}
