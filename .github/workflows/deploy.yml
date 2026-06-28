@@ -1,7 +1,5 @@
 name: Deploy — Update Helm Tags & Sync ArgoCD
 
-# ─── Triggers ─────────────────────────────────────────────────────────────────
-# Triggered by build.yml dispatch OR manually with an image SHA
 on:
   workflow_dispatch:
     inputs:
@@ -20,14 +18,10 @@ on:
         required: false
         default: '["core-service","ai-service","document-service","frontend"]'
 
-# ─── Permissions ──────────────────────────────────────────────────────────────
 permissions:
-  id-token: write   # OIDC → AWS (to read ECR registry URL)
+  id-token: write
   contents: read
 
-# Serialise all Helm repo writes. dev (auto) and prod (promote-prod.yml) share
-# this group — only one push to cargotrack-helm happens at a time, eliminating
-# the "[rejected] fetch first" race condition on concurrent runs.
 concurrency:
   group: helm-push
   cancel-in-progress: false
@@ -35,15 +29,8 @@ concurrency:
 env:
   AWS_REGION: us-east-1
   HELM_REPO: CargoTrack-Org/cargotrack-helm
-  # HELM_REPO_TOKEN must be a GitHub Personal Access Token (classic or fine-grained)
-  # with repo:write access to CargoTrack-Org/cargotrack-helm.
-  # Set it as a repository secret: Settings → Secrets → Actions → HELM_REPO_TOKEN.
-  # The default GITHUB_TOKEN cannot push to a different repository.
 
 jobs:
-  # ════════════════════════════════════════════════════════════════════════════
-  # JOB 1: Update image tags in cargotrack-helm → ArgoCD auto-syncs
-  # ════════════════════════════════════════════════════════════════════════════
   update-helm-tags:
     name: Update Helm Image Tags (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
@@ -65,8 +52,6 @@ jobs:
       - name: Resolve helm branch
         id: helm-branch
         run: |
-          # dev values live on develop branch; prod values live on main branch.
-          # This ensures dev and prod Helm values are never mixed.
           ENV="${{ github.event.inputs.environment || 'dev' }}"
           if [ "$ENV" = "prod" ]; then
             echo "branch=main" >> $GITHUB_OUTPUT
@@ -95,9 +80,6 @@ jobs:
           echo "env=${ENV}" >> $GITHUB_OUTPUT
 
       - name: Update image tags in per-service values files
-        # Only updates the services listed in the `services` input JSON array.
-        # Unchanged services keep their existing tag — ArgoCD won't restart them.
-        # Defaults to all 4 services when triggered manually without a services list.
         env:
           SERVICES: ${{ github.event.inputs.services || '["core-service","ai-service","document-service","frontend"]' }}
         run: |
@@ -125,16 +107,10 @@ jobs:
           git add .
           git diff --staged --quiet || \
             git commit -m "deploy(${{ steps.env.outputs.env }}): images tagged ${GITHUB_SHA::8} [skip ci]"
-          # Pull --rebase: handles concurrent pushes to the same branch.
-          # dev→develop and prod→main never conflict since they write different branches.
           git pull --rebase origin "${HELM_BRANCH}"
           git push origin "${HELM_BRANCH}"
           echo "✅ Helm values updated on ${HELM_BRANCH} — ArgoCD will auto-sync within 3 minutes"
 
-  # ════════════════════════════════════════════════════════════════════════════
-  # JOB 2: Smoke tests — verify pods are healthy after ArgoCD syncs
-  # Waits for ArgoCD to pick up the new tag and reconcile pods
-  # ════════════════════════════════════════════════════════════════════════════
   smoke-test:
     name: Smoke Tests (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
@@ -160,7 +136,6 @@ jobs:
             --name cargotrack
 
       - name: Wait for ArgoCD to sync
-        # ArgoCD polls every 3 minutes by default; wait 90s then verify via kubectl
         run: |
           echo "Waiting 90 seconds for ArgoCD to detect new image tag..."
           sleep 90
@@ -180,14 +155,10 @@ jobs:
 
       - name: Discover ALB endpoint from AWS
         id: alb
-        # Use AWS CLI (which the ECR role CAN call) to find the ALB hostname
-        # instead of kubectl (which requires a separate EKS cluster-access role).
         run: |
           ENV="${{ github.event.inputs.environment || 'dev' }}"
           NS="cargotrack-${ENV}"
 
-          # The ALB is tagged by the AWS Load Balancer Controller with the
-          # ingress namespace and name. Find it via the tag filter.
           ALB_ARN=$(aws elbv2 describe-load-balancers \
             --query "LoadBalancers[?contains(LoadBalancerName, 'cargotrack')].LoadBalancerArn" \
             --output text 2>/dev/null | head -1 || echo "")
@@ -217,18 +188,15 @@ jobs:
 
           echo "Testing endpoints on ALB: http://${ALB}"
 
-          # Core service health (routed by nginx via /api/)
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time 15 --retry 3 --retry-delay 5 \
             "http://${ALB}/api/health" || echo "000")
           echo "  /api/health        → HTTP ${HTTP_CODE}"
 
-          # Frontend (nginx serving React SPA)
           FRONTEND_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time 10 "http://${ALB}/" || echo "000")
           echo "  /                  → HTTP ${FRONTEND_CODE}"
 
-          # nginx health endpoint (direct nginx check, not via proxy)
           NGINX_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time 10 "http://${ALB}/health" || echo "000")
           echo "  /health (nginx)    → HTTP ${NGINX_CODE}"
